@@ -54,26 +54,31 @@ app.post("/offer-ride", async (req, res) => {
 app.get("/rides", async (req, res) => {
 
   const filter = {};
-  const currentUserId = req.query.userId;
+const currentUserId = req.query.userId;
 
-  if (typeof req.query.pickup === "string" && req.query.pickup.trim()) {
-    filter.pickup = {
-      $regex: escapeRegExp(req.query.pickup.trim()),
-      $options: "i"
-    };
-  }
+if (typeof req.query.pickup === "string" && req.query.pickup.trim()) {
+  filter.pickup = {
+    $regex: escapeRegExp(req.query.pickup.trim()),
+    $options: "i"
+  };
+}
 
-  if (typeof req.query.drop === "string" && req.query.drop.trim()) {
-    filter.drop = {
-      $regex: escapeRegExp(req.query.drop.trim()),
-      $options: "i"
-    };
-  }
+if (typeof req.query.drop === "string" && req.query.drop.trim()) {
+  filter.drop = {
+    $regex: escapeRegExp(req.query.drop.trim()),
+    $options: "i"
+  };
+}
 
-  // Exclude user's own rides
-  if (currentUserId) {
-    filter.userId = { $ne: currentUserId };
-  }
+// Exclude user's own rides
+if (currentUserId) {
+  filter.userId = { $ne: currentUserId };
+}
+
+// Only show upcoming rides (date >= today)
+const today = new Date();
+const todayStr = today.toISOString().split("T")[0]; // "2025-06-13"
+filter.date = { $gte: todayStr };
 
   const rides = await Ride.find(filter).populate("userId", "name profilePhoto age rating").sort({
     date: 1,
@@ -440,18 +445,92 @@ app.delete("/cancel-ride", async (req, res) => {
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+// Store OTPs temporarily (in production use Redis, this works for now)
+const otpStore = {};
+
+// Send OTP Route
+app.post("/send-otp", async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone || phone.length !== 10) {
+      return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore[phone] = { otp, expiresAt: Date.now() + 5 * 60 * 1000 }; // 5 min expiry
+
+    const smsResponse = await fetch(
+      `https://www.fast2sms.com/dev/bulkV2?authorization=${process.env.FAST2SMS_KEY}&route=otp&variables_values=${otp}&flash=0&numbers=${phone}`,
+      { method: "GET" }
+    );
+
+    const smsData = await smsResponse.json();
+
+    if (smsData.return) {
+      res.json({ message: "OTP sent successfully" });
+    } else {
+      res.status(500).json({ message: "Failed to send OTP. Check your Fast2SMS key." });
+    }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Verify OTP Route
+app.post("/verify-otp", async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+    const record = otpStore[phone];
+
+    if (!record) {
+      return res.status(400).json({ message: "OTP not sent or expired. Try again." });
+    }
+
+    if (Date.now() > record.expiresAt) {
+      delete otpStore[phone];
+      return res.status(400).json({ message: "OTP has expired. Please resend." });
+    }
+
+    if (record.otp !== otp) {
+      return res.status(400).json({ message: "Incorrect OTP. Please try again." });
+    }
+
+    delete otpStore[phone];
+    res.json({ message: "Phone verified successfully", verified: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 app.post("/signup", async (req, res) => {
 
   try {
 
     const { name, email, password, age, gender, phone, profilePhoto } = req.body;
 
+    // Validate email format (must have proper domain like .com, .in etc.)
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!email || !emailRegex.test(email)) {
+      return res.status(400).json({
+        message: "Please enter a valid email address (e.g. yourname@gmail.com)"
+      });
+    }
+
+    // Check if email already exists
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res.status(400).json({
+        message: "An account with this email already exists. Please login."
+      });
+    }
+
     const hashedPassword =
       await bcrypt.hash(password, 10);
 
     const user = await User.create({
       name,
-      email,
+      email: email.toLowerCase(),
       password: hashedPassword,
       age: parseInt(age) || null,
       gender: gender || "",
