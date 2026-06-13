@@ -43,11 +43,52 @@ function escapeRegExp(value) {
 
 app.post("/offer-ride", async (req, res) => {
 
-  await Ride.create(req.body);
+  try {
 
-  res.json({
-    message: "Ride Added Successfully 🚀"
-  });
+    const { userId, date, time } = req.body;
+
+    if (!userId || !date || !time) {
+      return res.status(400).json({
+        message: "Missing required ride details"
+      });
+    }
+
+    // Get this user's upcoming rides
+    const today = new Date().toISOString().split("T")[0];
+
+    const existingRides = await Ride.find({
+      userId,
+      date: { $gte: today }
+    });
+
+    const newRideTime = new Date(`${date}T${time}`);
+    const ONE_HOUR = 60 * 60 * 1000;
+
+    // Block if any existing ride is within 1 hour of this new ride
+    const hasConflict = existingRides.some((ride) => {
+      const existingTime = new Date(`${ride.date}T${ride.time}`);
+      return Math.abs(existingTime - newRideTime) < ONE_HOUR;
+    });
+
+    if (hasConflict) {
+      return res.status(400).json({
+        message: "⚠️ You already have a ride scheduled around this date & time. Please pick a different slot (at least 1 hour gap from your other rides)."
+      });
+    }
+
+    await Ride.create(req.body);
+
+    res.json({
+      message: "Ride Added Successfully 🚀"
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      message: error.message
+    });
+
+  }
 
 });
 
