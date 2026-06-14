@@ -498,6 +498,14 @@ app.post("/send-otp", async (req, res) => {
       return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
     }
 
+    // Check if phone number is already registered — saves OTP credits
+    const existingPhone = await User.findOne({ phone });
+    if (existingPhone) {
+      return res.status(400).json({
+        message: "This phone number is already registered. Please login instead."
+      });
+    }
+
     const response = await fetch(
       `https://2factor.in/API/V1/${process.env.TWOFACTOR_KEY}/SMS/+91${phone}/AUTOGEN`
     );
@@ -563,6 +571,14 @@ app.post("/signup", async (req, res) => {
     if (existingUser) {
       return res.status(400).json({
         message: "An account with this email already exists. Please login."
+      });
+    }
+
+    // Check if phone number already exists
+    const existingPhone = await User.findOne({ phone });
+    if (existingPhone) {
+      return res.status(400).json({
+        message: "An account with this phone number is already registered. Please login or use a different number."
       });
     }
 
