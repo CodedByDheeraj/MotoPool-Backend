@@ -486,8 +486,8 @@ app.delete("/cancel-ride", async (req, res) => {
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Store OTPs temporarily (in production use Redis, this works for now)
-const otpStore = {};
+// Store session IDs temporarily
+const otpSessions = {};
 
 // Send OTP Route
 app.post("/send-otp", async (req, res) => {
@@ -498,21 +498,19 @@ app.post("/send-otp", async (req, res) => {
       return res.status(400).json({ message: "Enter a valid 10-digit phone number" });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore[phone] = { otp, expiresAt: Date.now() + 5 * 60 * 1000 }; // 5 min expiry
-
-    const smsResponse = await fetch(
-      `https://www.fast2sms.com/dev/bulkV2?authorization=${process.env.FAST2SMS_KEY}&route=otp&variables_values=${otp}&flash=0&numbers=${phone}`,
-      { method: "GET" }
+    const response = await fetch(
+      `https://2factor.in/API/V1/${process.env.TWOFACTOR_KEY}/SMS/+91${phone}/AUTOGEN`
     );
 
-    const smsData = await smsResponse.json();
+    const data = await response.json();
 
-    if (smsData.return) {
+    if (data.Status === "Success") {
+      otpSessions[phone] = data.Details; // session id from 2Factor
       res.json({ message: "OTP sent successfully" });
     } else {
-      res.status(500).json({ message: "Failed to send OTP. Check your Fast2SMS key." });
+      res.status(500).json({ message: "Failed to send OTP. Please try again." });
     }
+
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -522,23 +520,25 @@ app.post("/send-otp", async (req, res) => {
 app.post("/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body;
-    const record = otpStore[phone];
+    const sessionId = otpSessions[phone];
 
-    if (!record) {
+    if (!sessionId) {
       return res.status(400).json({ message: "OTP not sent or expired. Try again." });
     }
 
-    if (Date.now() > record.expiresAt) {
-      delete otpStore[phone];
-      return res.status(400).json({ message: "OTP has expired. Please resend." });
+    const response = await fetch(
+      `https://2factor.in/API/V1/${process.env.TWOFACTOR_KEY}/SMS/VERIFY/${sessionId}/${otp}`
+    );
+
+    const data = await response.json();
+
+    if (data.Status === "Success") {
+      delete otpSessions[phone];
+      res.json({ message: "Phone verified successfully", verified: true });
+    } else {
+      res.status(400).json({ message: "Incorrect or expired OTP. Please try again." });
     }
 
-    if (record.otp !== otp) {
-      return res.status(400).json({ message: "Incorrect OTP. Please try again." });
-    }
-
-    delete otpStore[phone];
-    res.json({ message: "Phone verified successfully", verified: true });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
